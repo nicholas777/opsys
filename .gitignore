@@ -1,3 +1,6 @@
+kernel/zig-out
+kernel/zig-cache
+
 # Prerequisites
 *.d
 
