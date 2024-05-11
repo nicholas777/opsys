@@ -17,7 +17,6 @@ export const multiboot align(4) linksection(".multiboot") = MultibootHeader{
 };
 
 export var stack_bytes: [16 * 1024]u8 align(16) linksection(".bss") = undefined;
-const stack_bytes_slice = stack_bytes[0..];
 
 const builtin = @import("std").builtin;
 

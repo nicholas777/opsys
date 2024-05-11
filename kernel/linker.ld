@@ -3,6 +3,7 @@ ENTRY(_start)
 SECTIONS {
     . = 1M;
  
+    kernel_start = .;
     .multiboot : {
         KEEP(*(.multiboot))
     }
@@ -23,4 +24,6 @@ SECTIONS {
         *(COMMON)
         *(.bss)
     }
+
+    kernel_end = .;
 }

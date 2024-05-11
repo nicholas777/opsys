@@ -26,10 +26,10 @@ pub const ConsoleColor = enum(u8) {
 
 var row: usize = 0;
 var column: usize = 0;
-var color = vgaEntryColor(ConsoleColor.LightGray, ConsoleColor.Black);
+var color = vgaColor(ConsoleColor.LightGray, ConsoleColor.Black);
 var buffer = @as([*]volatile u16, @ptrFromInt(0xB8000));
 
-fn vgaEntryColor(fg: ConsoleColor, bg: ConsoleColor) u8 {
+pub fn vgaColor(fg: ConsoleColor, bg: ConsoleColor) u8 {
     return @intFromEnum(fg) | (@intFromEnum(bg) << 4);
 }
 
@@ -57,19 +57,31 @@ pub fn putCharAt(c: u8, new_color: u8, x: usize, y: usize) void {
 }
 
 pub fn putChar(c: u8) void {
-    putCharAt(c, color, column, row);
-    column += 1;
-    if (column == VGA_WIDTH) {
+    if (c == '\n') {
         column = 0;
         row += 1;
         if (row == VGA_HEIGHT)
             row = 0;
+    } else {
+        putCharAt(c, color, column, row);
+        column += 1;
+        if (column == VGA_WIDTH) {
+            column = 0;
+            row += 1;
+            if (row == VGA_HEIGHT)
+                row = 0;
+        }
     }
 }
 
 pub fn puts(data: []const u8) void {
     for (data) |c|
         putChar(c);
+}
+
+pub fn putline(data: []const u8) void {
+    puts(data);
+    putChar('\n');
 }
 
 pub const writer = Writer(void, error{}, callback){ .context = {} };

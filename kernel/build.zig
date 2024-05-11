@@ -27,38 +27,42 @@ pub fn build(b: *std.Build) void {
     const iso_cmd = &[_][]const u8{ "/bin/sh", "-c", std.mem.concat(
         b.allocator,
         u8,
-        &[_][]const u8{ "rm -f ", iso_path, " && ", "mkdir -p ", iso_dir, " ", iso_dir, "/boot/grub", " &&", " cp ", kernel_path, " ", iso_dir, "/boot", " && ", " cp grub.cfg ", iso_dir, "/boot/grub", " && ", " grub-mkrescue -o ", iso_path, " ", iso_dir },
+        &[_][]const u8{ "rm -f ", iso_path, " && ", "mkdir -p ", iso_dir, " ", iso_dir, "/boot/grub", " &&", " cp ", kernel_path, " ", iso_dir, "/boot", " && ", " cp grub.cfg ", iso_dir, "/boot/grub", " && ", " grub-mkrescue -o ", iso_path, " ", iso_dir, " > /dev/null" },
     ) catch unreachable };
-    std.debug.print("{s}", .{iso_cmd});
 
     var iso_step = b.addSystemCommand(iso_cmd);
     b.getInstallStep().dependOn(&iso_step.step);
+    iso_step.step.dependOn(&kernel.step);
 
     const iso_lp = std.Build.LazyPath{ .cwd_relative = iso_path };
-    b.getInstallStep().dependOn(&b.addInstallFileWithDir(iso_lp, .prefix, "bin/kernel.iso").step);
+    const iso_install_step = &b.addInstallFileWithDir(iso_lp, .prefix, "bin/kernel.iso").step;
+    iso_install_step.dependOn(&iso_step.step);
+    b.getInstallStep().dependOn(iso_install_step);
 
-    const run = b.option(bool, "run", "Run the os using qemu") orelse false;
-    if (run) {
-        const out_path = std.mem.concat(b.allocator, u8, &[_][]const u8{
-            b.install_prefix, "/bin/kernel.iso",
-        }) catch unreachable;
+    const out_path = std.mem.concat(b.allocator, u8, &[_][]const u8{
+        b.install_prefix, "/bin/kernel.iso",
+    }) catch unreachable;
 
-        const run_cmd_str = &[_][]const u8{
-            "qemu-system-x86_64",
-            "-cdrom",
-            out_path,
-            "-debugcon",
-            "stdio",
-            "-vga",
-            "virtio",
-            "-m",
-            "4G",
-            "-machine",
-            "q35,accel=kvm:whpx:tcg",
-            "-no-reboot",
-            "-no-shutdown",
-        };
+    const run_cmd_str = &[_][]const u8{
+        "qemu-system-i386",
+        "-cdrom",
+        out_path,
+        "-debugcon",
+        "stdio",
+        "-vga",
+        "virtio",
+        "-m",
+        "4G",
+        "--no-reboot",
+        "--no-shutdown",
+        "-machine",
+        "q35,accel=kvm:whpx:tcg",
+        "-d",
+        "int,cpu_reset",
+    };
 
-        b.getInstallStep().dependOn(&b.addSystemCommand(run_cmd_str).step);
-    }
+    var run_cmd = &b.addSystemCommand(run_cmd_str).step;
+    run_cmd.dependOn(b.getInstallStep());
+    const run_step = b.step("run", "Run the kernel using qemu");
+    run_step.dependOn(run_cmd);
 }
