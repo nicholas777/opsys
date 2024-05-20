@@ -2,6 +2,8 @@ const console = @import("console.zig");
 const gdt = @import("gdt.zig");
 const memory = @import("memory.zig");
 const heap = @import("heap.zig");
+const int = @import("interrupts.zig");
+const pic = @import("pic.zig");
 
 pub fn kmain() void {
     console.initialize();
@@ -16,11 +18,14 @@ pub fn kmain() void {
     console.printf("Paging on\n", .{});
 
     const alloc = heap.KernelAllocator;
-    var mem = alloc.alloc(u8, 5) catch unreachable;
-    mem[0] = 'A';
-    mem[1] = 'B';
-    mem[2] = 'C';
-    mem[3] = 'D';
-    mem[4] = 'E';
-    console.printf("{s}\n", .{mem});
+    _ = alloc;
+
+    // Disable everything but keyboard
+    const pic1_mask: u16 = 0b11111001;
+    const pic2_mask: u16 = 0b11111111;
+    pic.initPic(0x20, pic1_mask | (pic2_mask << 8));
+
+    int.initInterrupts();
+    asm volatile ("sti");
+    console.putline("Interrupts on");
 }

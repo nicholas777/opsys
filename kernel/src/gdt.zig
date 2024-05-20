@@ -68,11 +68,14 @@ comptime {
         \\     movw %ax, %gs
         \\     movw %ax, %ss
         \\
-        \\     jmp $0x10, $flush_cs
+        \\     jmpl $0x10, $flush_cs
         \\ flush_cs:
         \\     ret
     );
 }
+
+pub const CodeSS = 0x10;
+pub const DataSS = 0x8;
 
 const console = @import("console.zig");
 

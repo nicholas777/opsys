@@ -1,2 +1,2 @@
 # opsys
-A operating system created for learning purposes.
+An operating system created for learning purposes.
