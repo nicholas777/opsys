@@ -52,6 +52,7 @@ fn markPagesUsed(start: usize, end: usize) void {
 
     var i: usize = start_page / 8;
     var j: usize = start_page % 8;
+
     while (i <= end_byte) : (i += 1) {
         var end_at: usize = 8;
         if (i == end_byte) {
@@ -61,12 +62,15 @@ fn markPagesUsed(start: usize, end: usize) void {
         while (j < end_at) : (j += 1) {
             physical_mmap[i] |= (PAGE_USED << @intCast(j));
         }
+
+        j = 0;
     }
 }
 
 fn markPageUsed(addr: usize) void {
-    const index = addr / PAGE_SIZE;
-    const bit = index % 8;
+    const pagenr = addr / PAGE_SIZE;
+    const index = pagenr / 8;
+    const bit = pagenr % 8;
 
     physical_mmap[index] |= PAGE_USED << @intCast(bit);
 }
@@ -75,16 +79,17 @@ extern const kernel_start: usize;
 extern const kernel_end: usize;
 
 var page_directory: [1024]u32 align(4096) linksection(".bss") = undefined;
+var pt_1023: [1024]u32 align(4096) linksection(".bss") = undefined;
 
 fn present(entry: u32) bool {
     return entry & 0x1 == 1;
 }
 
 pub const PageTableType = enum(u8) {
-    KernelRO = 0b00100001,
+    KernelRO = 0b00000001,
     KernelRW = 0b00000011,
-    UserRO = 0b00100101,
-    UserRW = 0b00100111,
+    UserRO = 0b00000101,
+    UserRW = 0b00000111,
 };
 
 const PAGE_FLAG: u32 = 0x3FF;
@@ -95,7 +100,7 @@ fn registerPT(i: usize, pt_type: PageTableType) usize {
     const addr = allocPhysicalPage();
 
     page_directory[i] = addr | @intFromEnum(pt_type);
-    @as([*]u32, @ptrFromInt(page_directory[1023] & (~PAGE_FLAG)))[i] = addr | @intFromEnum(pt_type);
+    pt_1023[i] = addr | @intFromEnum(pt_type);
 
     return addr;
 }
@@ -104,7 +109,7 @@ pub fn mapPage(pt_type: PageTableType) usize {
     return mapPageAt(pt_type, allocPhysicalPage());
 }
 
-fn mapPageAt(pt_type: PageTableType, addr: usize) usize {
+pub fn mapPageAt(pt_type: PageTableType, addr: usize) usize {
     var i: usize = 0;
     var j: usize = 0;
 
@@ -112,10 +117,12 @@ fn mapPageAt(pt_type: PageTableType, addr: usize) usize {
         if (i == 1023) break;
         if (!present(page_directory[i])) break;
 
-        const pt = @as([*]u32, @ptrFromInt(page_directory[i] & (~PAGE_FLAG)));
+        const pt = @as([*]u32, @ptrFromInt((1023 << 22) | (i << 12)));
         while (j <= 1024) : (j += 1) {
             if (j == 1024) break;
-            if (!present(pt[j])) break;
+            if (!present(pt[j])) {
+                break;
+            }
         }
 
         if (j != 1024) break;
@@ -126,12 +133,13 @@ fn mapPageAt(pt_type: PageTableType, addr: usize) usize {
 
     var pt: [*]u32 = undefined;
     if (!present(page_directory[i])) {
-        pt = @as([*]u32, @ptrFromInt(registerPT(i, pt_type)));
+        _ = registerPT(i, .KernelRW);
+        pt = @as([*]u32, @ptrFromInt((1023 << 22) | (i << 12)));
     } else {
-        pt = @as([*]u32, @ptrFromInt(page_directory[i]));
+        pt = @as([*]u32, @ptrFromInt((1023 << 22) | (i << 12)));
     }
 
-    pt[i] = addr | @intFromEnum(pt_type);
+    pt[j] = addr | @intFromEnum(pt_type);
     return addr;
 }
 
@@ -141,7 +149,7 @@ fn mapPageAtTo(pt_type: PageTableType, addr: usize, virtual: usize) usize {
 
     var pt: [*]u32 = undefined;
     if (!present(page_directory[pde])) {
-        pt = @as([*]u32, @ptrFromInt(registerPT(pde, pt_type)));
+        pt = @as([*]u32, @ptrFromInt(registerPT(pde, .KernelRW)));
     } else {
         pt = @as([*]u32, @ptrFromInt(page_directory[pde] & (~PAGE_FLAG)));
     }
@@ -156,38 +164,30 @@ const heap = @import("heap.zig");
 const mb = @import("multiboot.zig");
 
 pub fn initPaging(mmap: [*]mb.MemoryMap, mmap_len: u32) void {
-    markPagesUsed(0, 8 * PAGE_SIZE);
+    markPagesUsed(0, 0x16000); // Just ignore this part, bootloader and such reside here
     markPagesUsed(@intFromPtr(&kernel_start), @intFromPtr(&kernel_end));
 
     var map_entry: [*]mb.MemoryMap = mmap;
     var size: usize = 0;
     while (size < mmap_len) : (map_entry += 1) {
-        if (map_entry[0].addr + map_entry[0].length >= std.math.maxInt(u32)) continue;
         const esize: u32 = @intCast(map_entry[0].length & 0xFFFFFFFF);
         const eaddr: u32 = @intCast(map_entry[0].addr & 0xFFFFFFFF);
 
-        if (map_entry[0].type != mb.MemoryAvailable)
+        if (map_entry[0].type != mb.MemoryAvailable and
+            map_entry[0].addr + map_entry[0].length <= std.math.maxInt(u32))
             markPagesUsed(eaddr, eaddr + esize);
         size += map_entry[0].size + 4; // The size field itself does not count towards .size
     }
 
     // The last page table is used to map the other page tables
-    const pt_addr = allocPhysicalPage();
-    const page_ptr = @as([*]u32, @ptrFromInt(pt_addr));
+    const pt_addr = @intFromPtr(&pt_1023);
 
     page_directory[1023] = pt_addr | @intFromEnum(PageTableType.KernelRW);
-    page_ptr[1023] = pt_addr | @intFromEnum(PageTableType.KernelRW);
+    pt_1023[1023] = pt_addr | @intFromEnum(PageTableType.KernelRW);
 
     // Now we just need to map the kernel itself
     const kstart_page = @intFromPtr(&kernel_start) / PAGE_SIZE;
     const kend_page = @intFromPtr(&kernel_end) / PAGE_SIZE + 1;
-    const kpages = kend_page - kstart_page;
-
-    console.printf("Kernel start: {x}\nKernel end: {x}\nKernel size: {} pages\n", .{
-        @intFromPtr(&kernel_start),
-        @intFromPtr(&kernel_end),
-        kpages,
-    });
 
     var i: usize = kstart_page;
     while (i <= kend_page) : (i += 1) {
@@ -213,7 +213,6 @@ pub fn initPaging(mmap: [*]mb.MemoryMap, mmap_len: u32) void {
 
     // Enable the paging
     asm volatile (
-        \\ cli
         \\ movl %[pd], %cr3
         \\ movl %cr0, %ebx
         \\ orl $0x80000001, %ebx
