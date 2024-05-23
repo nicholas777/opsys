@@ -1,6 +1,8 @@
 const std = @import("std");
 
-var physical_mmap: [1024 * 1024 / 8]u8 = undefined;
+const mmap_size = 1024 * 1024 / 8;
+
+var physical_mmap: [mmap_size]u8 = undefined;
 
 const PAGE_USED: u8 = 1;
 const PAGE_FREE: u8 = 0;
@@ -40,12 +42,25 @@ pub fn freePhysicalPage(addr: usize) void {
 }
 
 fn markPagesUsed(start: usize, end: usize) void {
-    const start_page = start / PAGE_SIZE;
-    const end_page = end / PAGE_SIZE + 1;
+    if ((@as(u64, start) + @as(u64, end)) / 8 >= mmap_size) return;
 
-    var i = start_page / 8;
-    while (i <= end_page / 8) : (i += 1) {
-        physical_mmap[i] = 0xFF;
+    const start_page = start / PAGE_SIZE;
+    const end_page = if ((end / PAGE_SIZE) * PAGE_SIZE < end) end / PAGE_SIZE + 1 else end / PAGE_SIZE;
+
+    const end_byte = end_page / 8;
+    const end_bit = end_page % 8;
+
+    var i: usize = start_page / 8;
+    var j: usize = start_page % 8;
+    while (i <= end_byte) : (i += 1) {
+        var end_at: usize = 8;
+        if (i == end_byte) {
+            end_at = end_bit;
+        }
+
+        while (j < end_at) : (j += 1) {
+            physical_mmap[i] |= (PAGE_USED << @intCast(j));
+        }
     }
 }
 
@@ -138,10 +153,23 @@ fn mapPageAtTo(pt_type: PageTableType, addr: usize, virtual: usize) usize {
 
 const console = @import("console.zig");
 const heap = @import("heap.zig");
+const mb = @import("multiboot.zig");
 
-pub fn initPaging() void {
+pub fn initPaging(mmap: [*]mb.MemoryMap, mmap_len: u32) void {
     markPagesUsed(0, 8 * PAGE_SIZE);
     markPagesUsed(@intFromPtr(&kernel_start), @intFromPtr(&kernel_end));
+
+    var map_entry: [*]mb.MemoryMap = mmap;
+    var size: usize = 0;
+    while (size < mmap_len) : (map_entry += 1) {
+        if (map_entry[0].addr + map_entry[0].length >= std.math.maxInt(u32)) continue;
+        const esize: u32 = @intCast(map_entry[0].length & 0xFFFFFFFF);
+        const eaddr: u32 = @intCast(map_entry[0].addr & 0xFFFFFFFF);
+
+        if (map_entry[0].type != mb.MemoryAvailable)
+            markPagesUsed(eaddr, eaddr + esize);
+        size += map_entry[0].size + 4; // The size field itself does not count towards .size
+    }
 
     // The last page table is used to map the other page tables
     const pt_addr = allocPhysicalPage();

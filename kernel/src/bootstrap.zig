@@ -26,10 +26,13 @@ export fn _start() callconv(.Naked) noreturn {
     _ = asm volatile (
         \\ mov %[stack], %esp
         \\ mov %esp, %ebp
+        \\ pushl %ebx
+        \\ pushl %eax
         \\ calll *%[kmain]
+        \\ addl $8, %esp
         :
         : [stack] "{ecx}" (@intFromPtr(&stack_bytes) + @sizeOf(@TypeOf(stack_bytes))),
-          [kmain] "{ebx}" (@intFromPtr(&kmain)),
+          [kmain] "{edx}" (@intFromPtr(&kmain)),
     );
 
     while (true) {}
