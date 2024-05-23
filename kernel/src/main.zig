@@ -8,12 +8,9 @@ const heap = @import("heap.zig");
 const int = @import("interrupts.zig");
 const pic = @import("pic.zig");
 const mb = @import("multiboot.zig");
+const acpi = @import("acpi.zig");
 
 var mb_copy: mb.Multiboot linksection(".bss") = undefined;
-
-fn getPage(addr: usize) usize {
-    return addr - (addr % memory.PAGE_SIZE);
-}
 
 pub fn kmain(magic: u32, mb_struct: *mb.Multiboot) callconv(.C) void {
     asm volatile ("cli");
@@ -44,6 +41,9 @@ pub fn kmain(magic: u32, mb_struct: *mb.Multiboot) callconv(.C) void {
         panic("No multiboot memory map");
     }
 
+    // ACPI
+    const rsdp_ptr = acpi.findRsdp() catch panic("RSDP not found");
+
     // Paging
     memory.initPaging(multiboot.mmap_addr, multiboot.mmap_length);
     console.printf("Paging on\n", .{});
@@ -51,7 +51,7 @@ pub fn kmain(magic: u32, mb_struct: *mb.Multiboot) callconv(.C) void {
     const mmap_offset: usize = @intFromPtr(multiboot.mmap_addr) % memory.PAGE_SIZE;
     multiboot.mmap_addr = @ptrFromInt(memory.mapPageAt(
         .KernelRO,
-        getPage(@intFromPtr(multiboot.mmap_addr)),
+        @intFromPtr(multiboot.mmap_addr) - mmap_offset,
     ) + mmap_offset);
 
     const alloc = heap.KernelAllocator;
