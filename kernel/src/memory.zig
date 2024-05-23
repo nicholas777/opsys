@@ -140,7 +140,7 @@ pub fn mapPageAt(pt_type: PageTableType, addr: usize) usize {
     }
 
     pt[j] = addr | @intFromEnum(pt_type);
-    return addr;
+    return (i << 22) | (j << 12);
 }
 
 fn mapPageAtTo(pt_type: PageTableType, addr: usize, virtual: usize) usize {

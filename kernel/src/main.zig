@@ -48,10 +48,11 @@ pub fn kmain(magic: u32, mb_struct: *mb.Multiboot) callconv(.C) void {
     memory.initPaging(multiboot.mmap_addr, multiboot.mmap_length);
     console.printf("Paging on\n", .{});
 
+    const mmap_offset: usize = @intFromPtr(multiboot.mmap_addr) % memory.PAGE_SIZE;
     multiboot.mmap_addr = @ptrFromInt(memory.mapPageAt(
         .KernelRO,
         getPage(@intFromPtr(multiboot.mmap_addr)),
-    ));
+    ) + mmap_offset);
 
     const alloc = heap.KernelAllocator;
     _ = alloc;
