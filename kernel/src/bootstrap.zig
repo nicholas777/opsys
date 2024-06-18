@@ -1,5 +1,3 @@
-const std = @import("std");
-
 const ALIGN = 1 << 0;
 const MEMINFO = 1 << 1;
 const MAGIC = 0x1BADB002;
@@ -17,8 +15,6 @@ export const multiboot align(4) linksection(".multiboot") = MultibootHeader{
 };
 
 export var stack_bytes: [16 * 1024]u8 align(16) linksection(".bss") = undefined;
-
-const builtin = @import("std").builtin;
 
 const kmain = @import("main.zig").kmain;
 

@@ -15,10 +15,9 @@ const alloc_vtable = std.mem.Allocator.VTable{
 
 // We can probably ignore ptr_align since our block boorders are 16-byte aligned
 fn alloc_fn(_: *anyopaque, len: usize, ptr_align: u8, ret_addr: usize) ?[*]u8 {
-    _ = ptr_align;
     _ = ret_addr;
 
-    return alloc(len);
+    return alloc(len, ptr_align);
 }
 
 fn free_fn(_: *anyopaque, buf: []u8, buf_align: u8, ret_addr: usize) void {
@@ -28,7 +27,7 @@ fn free_fn(_: *anyopaque, buf: []u8, buf_align: u8, ret_addr: usize) void {
     free(@ptrCast(buf.ptr));
 }
 
-pub const HeapBlock = extern struct {
+pub const HeapBlock = struct {
     next: ?*HeapBlock = null,
     size: u32 = 0,
     used: u32 = 0,
@@ -36,7 +35,7 @@ pub const HeapBlock = extern struct {
     lfb: u32 = 0,
 };
 
-pub const Heap = extern struct {
+pub const Heap = struct {
     fblock: ?*HeapBlock = null,
 };
 
@@ -85,8 +84,14 @@ fn getNID(a: u8, b: u8) u8 {
 
 const console = @import("console.zig");
 
-pub fn alloc(size: u32) ?[*]u8 {
+pub fn alloc(size: u32, ptr_align: u32) ?[*]u8 {
     if (heap.fblock == null) return null;
+    if (ptr_align != 0 and (heap.fblock.?.block_size + @sizeOf(HeapBlock)) % ptr_align != 0) {
+        if (size == 7) {
+            while (true) {}
+        }
+        return null;
+    }
 
     var block: ?*HeapBlock = heap.fblock;
     while (block != null) : (block = block.?.next) {
@@ -97,7 +102,6 @@ pub fn alloc(size: u32) ?[*]u8 {
             var bitmap: [*]u8 = @as([*]u8, @ptrCast(block.?)) + @sizeOf(HeapBlock);
 
             var x: usize = 0;
-            console.printf("Hello! {} {} {} {} {}\n", .{ x, block.?.lfb, block.?.block_size, block.?.size, block_count });
             while (x < block_count) : (x += 1) {
                 if (x >= block_count) {
                     x = 0;

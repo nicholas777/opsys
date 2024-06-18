@@ -1,5 +1,10 @@
 const std = @import("std");
 
+const panic = @import("../../common.zig").panic;
+const console = @import("../../console.zig");
+const heap = @import("../../heap.zig");
+const mb = @import("../../multiboot.zig");
+
 const mmap_size = 1024 * 1024 / 8;
 
 var physical_mmap: [mmap_size]u8 = undefined;
@@ -28,17 +33,17 @@ pub fn allocPhysicalPage() usize {
 
 /// Check whether page is being used
 pub fn checkPhysicalPage(addr: usize) bool {
-    const index = addr / PAGE_SIZE;
-    const bit = index & 8;
+    const index = (addr / PAGE_SIZE) / 8;
+    const bit = (addr / PAGE_SIZE) & 8;
 
     return (physical_mmap[index] >> bit) & 0x1 == PAGE_USED;
 }
 
 pub fn freePhysicalPage(addr: usize) void {
-    const index = addr / PAGE_SIZE;
-    const bit = index & 8;
+    const index = (addr / PAGE_SIZE) / 8;
+    const bit = (addr / PAGE_SIZE) & 8;
 
-    physical_mmap[index] &= -bit;
+    physical_mmap[index] &= ~(PAGE_USED << @intCast(bit));
 }
 
 fn markPagesUsed(start: usize, end: usize) void {
@@ -94,8 +99,6 @@ pub const PageTableType = enum(u8) {
 
 const PAGE_FLAG: u32 = 0x3FF;
 
-const panic = @import("common.zig").panic;
-
 fn registerPT(i: usize, pt_type: PageTableType) usize {
     const addr = allocPhysicalPage();
 
@@ -140,7 +143,17 @@ pub fn mapPageAt(pt_type: PageTableType, addr: usize) usize {
     }
 
     pt[j] = addr | @intFromEnum(pt_type);
+
+    markPageUsed(addr);
+    reloadPT();
     return (i << 22) | (j << 12);
+}
+
+fn reloadPT() void {
+    asm volatile (
+        \\movl %cr3, %eax
+        \\movl %eax, %cr3
+        ::: "eax");
 }
 
 fn mapPageAtTo(pt_type: PageTableType, addr: usize, virtual: usize) usize {
@@ -159,9 +172,14 @@ fn mapPageAtTo(pt_type: PageTableType, addr: usize, virtual: usize) usize {
     return addr;
 }
 
-const console = @import("console.zig");
-const heap = @import("heap.zig");
-const mb = @import("multiboot.zig");
+pub fn freePage(addr: usize, free_physical: bool) void {
+    const pde = addr >> 22;
+    const pte = (addr >> 12) & 0x3FF;
+
+    const pt: [*]u32 = @ptrFromInt((1023 << 22) | (pde << 12));
+    if (free_physical) freePhysicalPage(pt[pte] & ~(PAGE_FLAG));
+    pt[pte] = 0;
+}
 
 pub fn initPaging(mmap: [*]mb.MemoryMap, mmap_len: u32) void {
     markPagesUsed(0, 0x16000); // Just ignore this part, bootloader and such reside here
@@ -176,6 +194,7 @@ pub fn initPaging(mmap: [*]mb.MemoryMap, mmap_len: u32) void {
         if (map_entry[0].type != mb.MemoryAvailable and
             map_entry[0].addr + map_entry[0].length <= std.math.maxInt(u32))
             markPagesUsed(eaddr, eaddr + esize);
+
         size += map_entry[0].size + 4; // The size field itself does not count towards .size
     }
 

@@ -77,8 +77,6 @@ comptime {
 pub const CodeSS = 0x10;
 pub const DataSS = 0x8;
 
-const console = @import("console.zig");
-
 pub fn initGdt() void {
     gdt[1] = create_sd(0, 0xFFFFF, .ring0, .rw_data);
     gdt[2] = create_sd(0, 0xFFFFF, .ring0, .read_exec_code);

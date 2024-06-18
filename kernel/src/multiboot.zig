@@ -49,3 +49,4 @@ pub const MemoryMap = packed struct {
 };
 
 pub const MemoryAvailable = 1;
+pub const ACPIData = 3;

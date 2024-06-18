@@ -2,13 +2,13 @@ const std = @import("std");
 
 const console = @import("console.zig");
 const panic = @import("common.zig").panic;
-const gdt = @import("gdt.zig");
-const memory = @import("memory.zig");
+const gdt = @import("arch/i386/gdt.zig");
+const memory = @import("arch/i386/memory.zig");
 const heap = @import("heap.zig");
-const int = @import("interrupts.zig");
+const int = @import("arch/i386/interrupts.zig");
 const pic = @import("pic.zig");
 const mb = @import("multiboot.zig");
-const acpi = @import("acpi.zig");
+const acpi = @import("acpi/acpi.zig");
 
 var mb_copy: mb.Multiboot linksection(".bss") = undefined;
 
@@ -42,7 +42,7 @@ pub fn kmain(magic: u32, mb_struct: *mb.Multiboot) callconv(.C) void {
     }
 
     // ACPI
-    const rsdp_ptr = acpi.findRsdp() catch panic("RSDP not found");
+    const rsdt = acpi.getRsdt();
 
     // Paging
     memory.initPaging(multiboot.mmap_addr, multiboot.mmap_length);
@@ -55,7 +55,9 @@ pub fn kmain(magic: u32, mb_struct: *mb.Multiboot) callconv(.C) void {
     ) + mmap_offset);
 
     const alloc = heap.KernelAllocator;
-    _ = alloc;
+
+    const acpi_info = acpi.mapAndParseACPI(alloc, rsdt);
+    _ = acpi_info;
 
     const pic1_mask: u16 = 0b11111011;
     const pic2_mask: u16 = 0b11111111;

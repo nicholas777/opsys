@@ -1,3 +1,6 @@
+const gdt = @import("gdt.zig");
+const console = @import("../../console.zig");
+
 const IDTR = packed struct {
     size: u16,
     offset: u32,
@@ -23,8 +26,6 @@ pub const InterruptHandler = fn () void;
 
 var idt: [256]Gate = undefined;
 var handlers: [256]?*const InterruptHandler = undefined;
-
-const gdt = @import("gdt.zig");
 
 fn createGate(addr: usize, present: bool, gate_type: GateType) Gate {
     const p_flag: u8 = if (present) 0b10000000 else 0b0;
@@ -99,8 +100,6 @@ comptime {
         \\ reg_isr 14
     );
 }
-
-const console = @import("console.zig");
 
 fn int13Handler() void {
     console.printf("int 13\n", .{});
