@@ -20,14 +20,39 @@ pub const Scope = struct {
     empty: bool,
 };
 
-pub const Object = struct { name: []const u8, data: union(enum) {
+pub const ObjectData = union(enum) {
     op_reg: OperationRegion,
     device: Device,
-} };
+    processor: Processor,
+    id: ID,
+};
+
+pub const Object = struct {
+    name: []const u8,
+    data: ObjectData = undefined,
+};
+
+pub const Processor = struct {
+    proc_id: u8,
+    pblk_addr: u32,
+    pblk_len: u8,
+
+    objects: std.ArrayList(Object),
+
+    bytes_left: usize = 0,
+    decl_size: usize = 0,
+};
+
+pub const ID = union(enum) {
+    int: usize,
+    str: []const u8,
+};
 
 pub const Device = struct {
-    id: usize,
-    uid: ?usize = null,
+    uid: ?ID = null,
+    prs: ?usize = null,
+    hid: ?ID = null,
+    cid: ?ID = null,
 
     bytes_left: usize = 0,
     decl_size: usize = 0,
@@ -64,6 +89,8 @@ var state: *InterpreterState = undefined;
 pub fn parseDSDT(alloc: std.mem.Allocator, dsdt: *acpi.TableHeader) !*NameSpace {
     state = try alloc.create(InterpreterState);
     defer alloc.destroy(state);
+    console.printf("Size: {}\n", .{dsdt.length - @sizeOf(acpi.TableHeader)});
+    const total_size = dsdt.length - @sizeOf(acpi.TableHeader);
 
     state.ns = try alloc.create(NameSpace);
     errdefer alloc.destroy(state.ns);
@@ -92,8 +119,17 @@ pub fn parseDSDT(alloc: std.mem.Allocator, dsdt: *acpi.TableHeader) !*NameSpace 
                 opcode.MutexOp => {
                     evalMutex();
                 },
+                opcode.ProcessorOp => {
+                    evalProcessor();
+                },
                 else => {
-                    console.printf("0x5b{x}: ", .{state.bc[state.i]});
+                    console.printf("0x5b{x} at addr=0x{x} of addr=0x{x} = {}%: \n", .{
+                        state.bc[state.i],
+                        @intFromPtr(state.bc + state.i),
+                        @intFromPtr(state.bc + total_size),
+                        state.i * 100 / total_size,
+                    });
+                    dumpNamespace();
                     panic("Unimplemented operation");
                 },
             }
@@ -119,23 +155,68 @@ pub fn parseDSDT(alloc: std.mem.Allocator, dsdt: *acpi.TableHeader) !*NameSpace 
                 opcode.MethodOp => {
                     evalMethod();
                 },
+                opcode.BufferOp => {
+                    const orig_i = state.i;
+                    _ = getBuffer();
+                    finishDecl(state.i - orig_i);
+                },
                 else => {
-                    console.printf("0x{x}: ", .{state.bc[state.i]});
+                    console.printf("0x{x} at addr=0x{x} of addr=0x{x} = {}%: \n", .{
+                        state.bc[state.i],
+                        @intFromPtr(state.bc + state.i),
+                        @intFromPtr(state.bc + total_size),
+                        state.i * 100 / total_size,
+                    });
+                    dumpNamespace();
                     panic("Unimplemented operation");
                 },
             }
         }
+
         if (state.curr_device != null and state.curr_device.?.data.device.bytes_left == 0) {
+            console.printf("END OF DEVICE\n", .{});
             state.curr_scope.scope_bytes_left -= state.curr_device.?.data.device.decl_size;
             state.curr_device = null;
         }
 
         if (state.curr_scope.scope_bytes_left == 0) {
             state.curr_scope.empty = true;
+            console.printf("END OF SCOPE\n", .{});
+
+            if (state.curr_scope.parent != null and state.curr_scope.parent.?.scope_bytes_left != 0) {
+                console.printf("Switched to parent, from: {s}, to: {s}\n", .{
+                    state.curr_scope.name,
+                    state.curr_scope.parent.?.name,
+                });
+                const old_scope = state.curr_scope;
+
+                state.curr_scope = state.curr_scope.parent.?;
+                state.curr_scope.scope_bytes_left -= old_scope.length;
+            }
         }
     }
 
     return state.ns;
+}
+
+fn dumpNamespace() void {
+    dumpScope(0, state.ns.root_scope);
+}
+
+fn dumpScope(indent: usize, scope: *Scope) void {
+    doIndent(indent);
+    console.printf("Scope: {s}\n", .{scope.name});
+
+    for (scope.children.items) |*item| {
+        dumpScope(indent + 1, item);
+    }
+}
+
+fn doIndent(indent: usize) void {
+    var i: usize = 0;
+    while (i < indent) : (i += 1) {
+        console.puts("  ");
+    }
 }
 
 fn getPkgLength() usize {
@@ -180,11 +261,12 @@ fn getUIntValue() usize {
             result = std.mem.bytesAsValue(u32, state.bc[state.i + 1 .. state.i + 5]).*;
             state.i += 5;
         },
-        else => {
-            // We simply treat the value as a byte,
-            // There is nothing in the spec about this but it seems to work
-            result = state.bc[state.i];
+        opcode.ZeroOp, opcode.OneOp, opcode.OnesOp => |value| {
+            result = value;
             state.i += 1;
+        },
+        else => {
+            panic("Invalid UINT value");
         },
     }
 
@@ -193,8 +275,7 @@ fn getUIntValue() usize {
 
 const ScopedName = struct {
     name: []const u8,
-    scope: *Scope,
-    is_dual: bool = false,
+    scope: ?*Scope,
 };
 
 fn getName() ScopedName {
@@ -206,42 +287,137 @@ fn getName() ScopedName {
 
     if (root) state.i += 1;
 
-    // Figure out what scope to use
-    var scope: *Scope = undefined;
-    if (root) {
-        scope = state.ns.root_scope;
-    } else {
-        scope = state.curr_scope;
-        while (parent != 0) : (parent -= 1) {
-            if (scope.parent == null) break;
-            scope = scope.parent.?;
+    if (state.bc[state.i] == opcode.MultiNamePrefix) {
+        state.i += 2;
+        const seg_count = state.bc[state.i - 1];
+
+        const name = state.bc[state.i .. state.i + (seg_count * 4)];
+
+        var pscope: *Scope = state.ns.root_scope;
+        if (parent != 0) {
+            pscope = state.curr_scope;
+            while (parent != 0) : (parent -= 1) {
+                if (pscope.parent == null) break;
+                pscope = pscope.parent.?;
+            }
         }
+
+        var i: usize = 0;
+        while (i < seg_count - 1) : (i += 1) {
+            const n: []const u8 = name[i * 4 .. i * 4 + 4];
+            for (pscope.children.items) |*item| {
+                if (std.mem.eql(u8, item.name, n)) {
+                    pscope = item;
+                    break;
+                }
+            }
+        }
+
+        state.i += 4 * seg_count;
+        return ScopedName{
+            .scope = pscope,
+            .name = state.bc[state.i - 4 .. state.i],
+        };
     }
 
     if (state.bc[state.i] == opcode.DualNamePrefix) {
-        state.i += 9;
+        state.i += 1;
+        const name = state.bc[state.i .. state.i + 8];
 
-        return ScopedName{
-            .is_dual = true,
-            .scope = scope,
-            .name = state.bc[state.i - 8 .. state.i],
-        };
-    } else {
-        state.i += 4;
+        var pscope: ?*Scope = null;
+        for (state.ns.root_scope.children.items) |*child| {
+            if (std.mem.eql(u8, child.name, name[0..4])) {
+                pscope = child;
+            }
+        }
 
+        state.i += 8;
         return ScopedName{
-            .name = state.bc[state.i - 4 .. state.i],
-            .scope = scope,
+            .name = name[4..],
+            .scope = pscope,
         };
     }
+
+    // Figure out what scope to use
+    var scope: ?*Scope = null;
+    if (root) {
+        scope = state.ns.root_scope;
+    } else if (parent != 0) {
+        scope = state.curr_scope;
+        while (parent != 0) : (parent -= 1) {
+            if (scope.?.parent == null) break;
+            scope = scope.?.parent.?;
+        }
+    }
+
+    state.i += 4;
+
+    return ScopedName{
+        .name = state.bc[state.i - 4 .. state.i],
+        .scope = scope,
+    };
+}
+
+fn getString() []const u8 {
+    state.i += 1;
+
+    var len: usize = 0;
+    while (state.bc[state.i + len] != 0) : (len += 1) {}
+
+    state.i += len + 1;
+    return state.bc[state.i - (len + 1) .. state.i - 1];
 }
 
 fn finishDecl(size: usize) void {
     if (state.curr_device != null) {
         state.curr_device.?.data.device.bytes_left -= size;
     } else {
-        state.curr_scope.scope_bytes_left -= size;
+        if (!state.curr_scope.empty)
+            state.curr_scope.scope_bytes_left -= size;
     }
+}
+
+fn evalProcessor() void {
+    const orig_i = state.i;
+    state.i += 1;
+
+    const pkg_len = getPkgLength();
+
+    const name_start = state.i;
+    const name = getName();
+    const name_len = state.i - name_start;
+
+    const proc_id: u8 = state.bc[state.i];
+    const pblk_addr: u32 =
+        std.mem.bytesAsValue(u32, state.bc[state.i + 1 .. state.i + 5]).*;
+    const pblk_len: u8 = state.bc[state.i + 5];
+
+    state.i += pkg_len - name_len;
+
+    console.printf("Processor: {s}, {}, {}, {}\n", .{
+        name.name,
+        state.curr_scope.scope_bytes_left,
+        state.i,
+        pkg_len,
+    });
+
+    var parent: *Scope = undefined;
+    if (name.scope) |s| {
+        parent = s;
+    } else {
+        parent = state.curr_scope;
+    }
+
+    var obj: *Object = parent.objects.addOne() catch panic("OOM");
+    obj.name = name.name;
+    obj.data.processor = .{
+        .proc_id = proc_id,
+        .pblk_addr = pblk_addr,
+        .pblk_len = pblk_len,
+        .objects = std.ArrayList(Object).init(state.alloc),
+    };
+
+    finishDecl(state.i - orig_i);
 }
 
 // Ignore mutices
@@ -263,42 +439,29 @@ fn evalDevice() void {
     const orig_i = state.i;
 
     var pkg_len_bytes: usize = 0;
-    if (pkg_len < 0x3F) {
+    if (pkg_len <= (0x3F - 1)) { // Correction for length of pkg_len itself // Correction for length of pkg_len itself
         pkg_len_bytes = 1;
-    } else if (pkg_len < 0xFFF) {
+    } else if (pkg_len <= (0xFFF - 2)) {
         pkg_len_bytes = 2;
-    } else if (pkg_len < 0xFFFFF) {
+    } else if (pkg_len <= (0xFFFFF - 3)) {
         pkg_len_bytes = 3;
-    } else if (pkg_len < 0xFFFFFFF) {
+    } else if (pkg_len <= (0xFFFFFFF - 4)) {
         pkg_len_bytes = 4;
     }
 
     const name = getName();
 
-    // Now comes a list of named declarations
-    // The first one will be an ID
-    if (state.bc[state.i] != opcode.NameOp) {
-        panic("ACPI Device without ID");
-    }
-
     console.printf("Device: {s}\n", .{name.name});
 
-    state.i += 1;
-
-    var obj: *Object = name.scope.objects.addOne() catch panic("OOM");
-    obj.name = name.name;
-    obj.data.device = .{ .id = 0 };
-
-    const id_name = getName();
-    if (std.mem.eql(u8, id_name.name, "_HID")) {
-        if (state.bc[state.i] == opcode.StringOp) {
-            panic("ACPI Device _HID of type string unimplemented");
-        }
-
-        obj.data.device.id = getUIntValue();
+    var obj: *Object = undefined;
+    if (name.scope) |s| {
+        obj = s.objects.addOne() catch panic("OOM");
     } else {
-        panic("ACPI Device ID type unimplemented");
+        obj = state.curr_scope.objects.addOne() catch panic("OOM");
     }
+
+    obj.name = name.name;
+    obj.data.device = .{ .uid = null };
 
     state.curr_device = obj;
     obj.data.device.bytes_left = pkg_len - (state.i - orig_i);
@@ -311,10 +474,18 @@ fn evalMethod() void {
     state.i += 1;
 
     const pkg_len = getPkgLength();
-    console.printf("Method: {s}\n", .{
-        state.bc[state.i .. state.i + 4],
+
+    const name_start = state.i;
+    const name = getName();
+    const name_len = state.i - name_start;
+
+    state.i += pkg_len - name_len;
+    console.printf("Method: {s}, i: {}, left: {}, size: {}\n", .{
+        name.name,
+        state.i,
+        state.curr_scope.scope_bytes_left,
+        state.i - orig_i,
     });
-    state.i += pkg_len;
 
     finishDecl(state.i - orig_i);
 }
@@ -324,11 +495,23 @@ fn evalField() void {
     state.i += 1;
 
     var pkg_len = getPkgLength();
+    const name_start = state.i;
 
-    const opreg_name = getName();
+    var opreg_name = getName();
+    if (opreg_name.scope == null) opreg_name.scope = state.curr_scope;
+    const name_len = state.i - name_start;
+
+    console.printf("OpReg Field: {s}\n", .{opreg_name.name});
     var opreg: ?*Object = null;
 
-    for (opreg_name.scope.objects.items) |*item| {
+    var parent: *Scope = undefined;
+    if (opreg_name.scope) |s| {
+        parent = s;
+    } else {
+        parent = state.curr_scope;
+    }
+
+    for (parent.objects.items) |*item| {
         if (std.mem.eql(u8, item.name, opreg_name.name)) {
             opreg = item;
         }
@@ -340,16 +523,34 @@ fn evalField() void {
     _ = flag;
     state.i += 1;
 
-    pkg_len -= 5; // opreg_name and flag
+    pkg_len -= name_len + 1; // opreg_name and flag
     while (pkg_len > 0) {
         const saved_i = state.i;
-        const name = getName();
-        const size = getPkgLength();
+        var name: []const u8 = undefined;
+        var size: usize = 0;
+
+        // Fields can be named, reserved or access-type fields
+        if (state.bc[state.i] == 0x0) {
+            // Reserved
+            state.i += 1;
+            name = state.bc[state.i - 1 .. state.i];
+            size = getPkgLength();
+        } else if (state.bc[state.i] == 0x1) {
+            // Access
+            state.i += 3;
+            name = state.bc[state.i - 3 .. state.i];
+            size = 0;
+        } else {
+            // Named fields
+            name = getName().name;
+            size = getPkgLength();
+        }
 
         var field = opreg.?.data.op_reg.fields.addOne() catch panic("OOM");
-        field.name = name.name;
+        field.name = name;
         field.size = size;
-        field.mem = state.alloc.alloc(u8, size) catch panic("OOM");
+        if (size != 0)
+            field.mem = state.alloc.alloc(u8, size) catch panic("OOM");
 
         pkg_len -= state.i - saved_i;
     }
@@ -362,13 +563,16 @@ fn evalOpRegion() void {
     state.i += 1;
 
     const name = getName();
-    const scope = name.scope;
+    const scope = name.scope orelse state.curr_scope;
 
-    var region: *Object = scope.objects.addOne() catch unreachable;
+    var region: *Object = scope.objects.addOne() catch panic("OOM");
     region.name = name.name;
+    region.data = undefined;
 
     const reg_space: opcode.RegionSpace = @enumFromInt(state.bc[state.i]);
     state.i += 1;
+
+    console.printf("OpReg: {s}\n", .{name.name});
 
     region.data.op_reg = .{
         .reg_space = reg_space,
@@ -376,6 +580,7 @@ fn evalOpRegion() void {
         .length = getUIntValue(),
         .fields = std.ArrayList(Field).init(state.alloc),
     };
+    console.printf("OpReg: {s}\n", .{name.name});
 
     finishDecl(state.i - orig_i);
 }
@@ -386,16 +591,102 @@ fn evalNamedDecl() void {
 
     const name = getName();
 
-    if (state.curr_device != null and std.mem.eql(u8, "_UID", name.name)) {
-        if (state.bc[state.i] == opcode.StringOp)
-            panic("Unimplemented: ACPI Device string IDs");
+    console.printf("NamedDecl: ID_NAME={s}", .{name.name});
+    if (state.curr_device != null) {
+        var dev: *Device = &state.curr_device.?.data.device;
+        if (std.mem.eql(u8, "_UID", name.name)) {
+            console.printf(", DEV_NAME={s}", .{state.curr_device.?.name});
 
-        state.curr_device.?.data.device.uid = getUIntValue();
+            if (state.bc[state.i] == opcode.StringOp) {
+                dev.uid = .{ .str = getString() };
+            } else {
+                dev.uid = .{ .int = getUIntValue() };
+            }
+        } else if (std.mem.eql(u8, "_HID", name.name)) {
+            console.printf(", DEV_NAME={s}", .{state.curr_device.?.name});
+
+            if (state.bc[state.i] == opcode.StringOp) {
+                dev.hid = .{ .str = getString() };
+            } else {
+                dev.hid = .{ .int = getUIntValue() };
+            }
+        } else if (std.mem.eql(u8, "_PRS", name.name)) {
+            // Resources are packed into buffers
+            if (state.bc[state.i] != opcode.BufferOp)
+                panic("ACPI: No buffer around resource");
+
+            console.printf(", DEV_NAME={s}", .{state.curr_device.?.name});
+            evalResource(getBuffer());
+        } else if (std.mem.eql(u8, "_CRS", name.name)) {
+            // Resources are packed into buffers
+            if (state.bc[state.i] != opcode.BufferOp)
+                panic("ACPI: No buffer around resource");
+
+            console.printf(", DEV_NAME={s}", .{state.curr_device.?.name});
+            evalResource(getBuffer());
+        } else if (std.mem.eql(u8, "_CID", name.name)) {
+            console.printf(", DEV_NAME={s}", .{state.curr_device.?.name});
+
+            if (state.bc[state.i] == opcode.StringOp) {
+                dev.hid = .{ .str = getString() };
+            } else {
+                dev.hid = .{ .int = getUIntValue() };
+            }
+        } else if (std.mem.eql(u8, "_STA", name.name)) {
+            console.printf(", DEV_NAME={s}", .{state.curr_device.?.name});
+            if (state.bc[state.i] >= opcode.ByteOp and
+                state.bc[state.i] <= opcode.DWordOp)
+            {
+                _ = getUIntValue();
+            }
+        } else {
+            panic("\nACPI: NamedDecl unimplemented");
+        }
     } else {
-        panic("ACPI: NamedDecl unimplemented");
+        if (std.mem.eql(u8, "_HID", name.name)) {
+            var obj = state.curr_scope.objects.addOne() catch panic("OOM");
+            obj.name = name.name;
+
+            if (state.bc[state.i] == opcode.StringOp) {
+                obj.data.id = .{ .str = getString() };
+            } else {
+                obj.data.id = .{ .int = getUIntValue() };
+            }
+        }
     }
 
+    console.putChar('\n');
+
     finishDecl(state.i - orig_i);
+}
+
+fn getBuffer() []u8 {
+    state.i += 1;
+    _ = getPkgLength();
+
+    // We assume that this is just a raw value
+    // It can be anything that evaluates to an integer,
+    // but that will be implemented later
+    const buff_len = getUIntValue();
+    state.i += buff_len;
+    return state.bc[state.i - buff_len .. state.i];
+}
+
+fn evalResource(buffer: []const u8) void {
+    var res_type: usize = 0;
+    var name: usize = 0;
+    var size: usize = 0;
+
+    if (buffer[0] >> 7 == 0) {
+        res_type = 0;
+        name = (buffer[0] >> 3) & 0xF;
+        size = buffer[0] & 0x7;
+    } else {
+        res_type = 1;
+        size += buffer[1];
+        size += @as(u16, @intCast(buffer[2])) << 8;
+        name = buffer[0] & 0x7F;
+    }
 }
 
 fn evalScope() void {
@@ -403,6 +694,7 @@ fn evalScope() void {
     var pkg_len = getPkgLength();
 
     var scope: *Scope = undefined;
+    var init: bool = true;
 
     if (state.bc[state.i] == '\\' and state.bc[state.i + 1] == 0) {
         scope = state.alloc.create(Scope) catch panic("OOM");
@@ -411,6 +703,7 @@ fn evalScope() void {
         scope.objects = std.ArrayList(Object).init(state.alloc);
         scope.length = pkg_len + 1; // The opcode
         scope.name = "\\___"; // If the name is just '\\', '\x00' it means root
+        console.printf("Root scope\n", .{});
 
         pkg_len -= 2;
         state.i += 2;
@@ -421,24 +714,56 @@ fn evalScope() void {
         const saved_i = state.i;
 
         const name = getName();
-        console.printf("Scope: {s}\n", .{name.name});
-        if (name.is_dual == false) {
-            scope = state.ns.root_scope.children.addOne() catch panic("OOM");
-        } else {
-            var parent: ?*Scope = null;
-            for (state.ns.root_scope.children.items) |*child| {
-                if (std.mem.eql(u8, child.name, name.name[0..4])) {
-                    parent = child;
-                }
-            }
 
-            if (parent == null) panic("ACPI AML: Invalid scope; nonexistent");
-            scope = parent.?.children.addOne() catch panic("OOM");
+        console.printf("Scope: {s}, curr: {s}, left: 0x{x}, parent: {s}\n", .{
+            name.name,
+            state.curr_scope.name,
+            state.curr_scope.scope_bytes_left,
+            if (name.scope == null) "none" else name.scope.?.name,
+        });
+
+        var parent: *Scope = undefined;
+        if (name.scope == null) {
+            if (!state.curr_scope.empty) {
+                parent = state.curr_scope;
+            } else {
+                parent = state.ns.root_scope;
+            }
+        } else {
+            parent = name.scope.?;
         }
 
-        scope.children = std.ArrayList(Scope).init(state.alloc);
-        scope.objects = std.ArrayList(Object).init(state.alloc);
-        scope.length = pkg_len + 1; // The opcode
+        for (parent.children.items) |*child| {
+            if (std.mem.eql(u8, child.name, name.name)) {
+                scope = child;
+                init = false;
+                break;
+            }
+        }
+
+        if (init == true) {
+            scope = parent.children.addOne() catch panic("OOM");
+
+            scope.parent = parent;
+        }
+
+        if (init) {
+            scope.children = std.ArrayList(Scope).init(state.alloc);
+            scope.objects = std.ArrayList(Object).init(state.alloc);
+        }
+
+        var pkg_len_bytes: usize = 0;
+        if (pkg_len <= (0x3F - 1)) { // Correction for length of pkg_len itself // Correction for length of pkg_len itself
+            pkg_len_bytes = 1;
+        } else if (pkg_len <= (0xFFF - 2)) {
+            pkg_len_bytes = 2;
+        } else if (pkg_len <= (0xFFFFF - 3)) {
+            pkg_len_bytes = 3;
+        } else if (pkg_len <= (0xFFFFFFF - 4)) {
+            pkg_len_bytes = 4;
+        }
+
+        scope.length = pkg_len + pkg_len_bytes + 1; // The opcode
         scope.name = name.name;
 
         pkg_len -= state.i - saved_i;

@@ -61,7 +61,7 @@ pub fn putChar(c: u8) void {
         column = 0;
         row += 1;
         if (row == VGA_HEIGHT)
-            row = 0;
+            scroll();
     } else {
         putCharAt(c, color, column, row);
         column += 1;
@@ -69,7 +69,7 @@ pub fn putChar(c: u8) void {
             column = 0;
             row += 1;
             if (row == VGA_HEIGHT)
-                row = 0;
+                scroll();
         }
     }
 }
@@ -93,4 +93,21 @@ fn callback(_: void, string: []const u8) error{}!usize {
 
 pub fn printf(comptime format: []const u8, args: anytype) void {
     fmt.format(writer, format, args) catch unreachable;
+}
+
+pub fn scroll() void {
+    row = 0;
+    while (row != VGA_HEIGHT - 1) : (row += 1) {
+        const start = row * VGA_WIDTH;
+        const line1 = buffer[start .. start + VGA_WIDTH];
+        const line2 = buffer[start + VGA_WIDTH .. start + VGA_WIDTH * 2];
+        @memcpy(line1, line2);
+    }
+
+    const start = row * VGA_WIDTH;
+    const line = buffer[start .. start + VGA_WIDTH];
+    @memset(line, 0);
+
+    row = VGA_HEIGHT - 1;
+    column = 0;
 }

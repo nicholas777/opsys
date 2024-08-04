@@ -40,6 +40,7 @@ pub const TableHeader = packed struct {
 };
 
 pub const ACPIInfo = struct {
+    version: std.SemanticVersion,
     rsdt: ?*TableHeader = null,
     fadt: ?*TableHeader = null,
     madt: ?*TableHeader = null,
@@ -138,6 +139,18 @@ pub fn mapAndParseACPI(alloc: std.mem.Allocator, rsdt_physical: *TableHeader) *A
 
     if (info.fadt == null) panic("No ACPI FADT table present");
     if (checkSum(info.fadt.?) == false) panic("Invalid ACPI FADT table");
+
+    const ver_min = @as([*]u8, @ptrCast(info.fadt.?))[131];
+    info.version = .{
+        .major = info.fadt.?.revision,
+        .minor = ver_min & 0xF,
+        .patch = ver_min >> 4,
+    };
+    console.printf("{}.{} errata {c}\n", .{
+        info.version.major,
+        info.version.minor,
+        'A' + @as(u8, @intCast(info.version.patch)) - 1,
+    });
 
     const dsdt_int = @intFromPtr(info.fadt.?) + @sizeOf(TableHeader);
     info.dsdt = @ptrFromInt(@as([*]u32, @ptrFromInt(dsdt_int))[1]);
