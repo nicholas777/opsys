@@ -8,7 +8,7 @@ const heap = @import("heap.zig");
 const int = @import("arch/i386/interrupts.zig");
 const pic = @import("pic.zig");
 const mb = @import("multiboot.zig");
-const acpi = @import("acpi/acpi.zig");
+const acpica = @import("acpica/acpica.zig");
 
 var mb_copy: mb.Multiboot linksection(".bss") = undefined;
 
@@ -33,6 +33,9 @@ pub fn kmain(magic: u32, mb_struct: *mb.Multiboot) callconv(.C) void {
         });
     }
 
+    // Needs to be done before paging is enabled
+    acpica.findRsdp();
+
     // Init the GDT
     gdt.initGdt();
     console.printf("GDT initialized\n", .{});
@@ -40,9 +43,6 @@ pub fn kmain(magic: u32, mb_struct: *mb.Multiboot) callconv(.C) void {
     if (multiboot.flags & mb.FlagMmap == 0) {
         panic("No multiboot memory map");
     }
-
-    // ACPI
-    const rsdt = acpi.getRsdt();
 
     // Paging
     memory.initPaging(multiboot.mmap_addr, multiboot.mmap_length);
@@ -55,9 +55,10 @@ pub fn kmain(magic: u32, mb_struct: *mb.Multiboot) callconv(.C) void {
     ) + mmap_offset);
 
     const alloc = heap.KernelAllocator;
+    _ = alloc;
 
-    const acpi_info = acpi.mapAndParseACPI(alloc, rsdt);
-    _ = acpi_info;
+    acpica.initializeAcpica();
+    console.putline("Initialized acpica");
 
     const pic1_mask: u16 = 0b11111011;
     const pic2_mask: u16 = 0b11111111;

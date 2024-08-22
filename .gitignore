@@ -1,5 +1,5 @@
 kernel/zig-out
-kernel/zig-cache
+kernel/.zig-cache
 
 # Prerequisites
 *.d

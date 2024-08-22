@@ -56,7 +56,7 @@ pub fn putCharAt(c: u8, new_color: u8, x: usize, y: usize) void {
     buffer[index] = vgaEntry(c, new_color);
 }
 
-pub fn putChar(c: u8) void {
+pub export fn putChar(c: u8) void {
     if (c == '\n') {
         column = 0;
         row += 1;
@@ -82,6 +82,13 @@ pub fn puts(data: []const u8) void {
 pub fn putline(data: []const u8) void {
     puts(data);
     putChar('\n');
+}
+
+export fn c_putline(data: [*]u8) void {
+    var len: usize = 0;
+    while (data[len] != 0) : (len += 1) {}
+
+    putline(data[0..len]);
 }
 
 pub const writer = Writer(void, error{}, callback){ .context = {} };

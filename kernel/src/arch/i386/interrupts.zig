@@ -1,6 +1,22 @@
 const gdt = @import("gdt.zig");
 const console = @import("../../console.zig");
 
+pub const Context = extern struct {
+    edi: u32,
+    esi: u32,
+    ebp: u32,
+    esp: u32,
+    ebx: u32,
+    edx: u32,
+    ecx: u32,
+    eax: u32,
+    int: u32, // Interrupt number
+    error_code: u32,
+    eip: u32,
+    cs: u32,
+    eflags: u32,
+};
+
 const IDTR = packed struct {
     size: u16,
     offset: u32,
@@ -22,10 +38,11 @@ const GateType = enum(u8) {
 };
 
 pub const ISR = fn () callconv(.Naked) void;
-pub const InterruptHandler = fn () void;
+pub const InterruptHandler = fn (?*anyopaque) void;
 
 var idt: [256]Gate = undefined;
 var handlers: [256]?*const InterruptHandler = undefined;
+var contexts: [256]?*anyopaque = undefined;
 
 fn createGate(addr: usize, present: bool, gate_type: GateType) Gate {
     const p_flag: u8 = if (present) 0b10000000 else 0b0;
@@ -38,73 +55,52 @@ fn createGate(addr: usize, present: bool, gate_type: GateType) Gate {
     };
 }
 
-extern fn isr_8() void;
-extern fn isr_11() void;
-extern fn isr_13() void;
-extern fn isr_14() void;
+export fn c_installInterruptHandler(h: ?*anyopaque, n: usize, c: ?*anyopaque) void {
+    installInterruptHandler(@ptrCast(h.?), n, c);
+}
+
+pub fn installInterruptHandler(
+    h: *const InterruptHandler,
+    n: usize,
+    context: ?*anyopaque,
+) void {
+    handlers[n] = h;
+    contexts[n] = context;
+}
+
+pub export fn uninstallInterruptHandler(n: usize) void {
+    handlers[n] = null;
+    contexts[n] = null;
+}
+
+extern fn interruptHandler() void;
+
+const interruptSize = 0xb;
 
 pub fn initInterrupts() void {
     var i: usize = 0;
     while (i < idt.len) : (i += 1) {
-        idt[i] = createGate(0x0, false, .InterruptGate);
+        idt[i] = createGate(
+            @intFromPtr(&interruptHandler) + i * interruptSize,
+            true,
+            .InterruptGate,
+        );
         handlers[i] = null;
     }
-
-    handlers[13] = &int13Handler;
-    idt[13] = createGate(@intFromPtr(&isr_13), true, .InterruptGate);
-
-    handlers[14] = &int14Handler;
-    idt[14] = createGate(@intFromPtr(&isr_14), true, .InterruptGate);
-
-    handlers[8] = &int14Handler;
-    idt[8] = createGate(@intFromPtr(&isr_8), true, .InterruptGate);
-
-    handlers[11] = &int14Handler;
-    idt[11] = createGate(@intFromPtr(&isr_11), true, .InterruptGate);
 
     idtr.offset = @intFromPtr(&idt);
     idtr.size = @sizeOf(@TypeOf(idt));
 
     asm volatile (
         \\ cli
+        \\ lidtl (%[idtr])
         :
         : [idtr] "{eax}" (&idtr),
-        : "eax"
     );
 }
 
-export fn intHandler(num: usize) void {
-    if (handlers[num] == null) return;
-    handlers[num].?();
-}
-
-comptime {
-    asm (
-        \\ .macro reg_isr n
-        \\ .globl isr_\n
-        \\ .type isr_\n, @function
-        \\ isr_\n:
-        \\     cli
-        \\     pusha
-        \\     pushl $\n
-        \\     call intHandler
-        \\     addl $4, %esp
-        \\     popa
-        \\     sti
-        \\     iret
-        \\ .endm
-        \\
-        \\ reg_isr 8
-        \\ reg_isr 11
-        \\ reg_isr 13
-        \\ reg_isr 14
-    );
-}
-
-fn int13Handler() void {
-    console.printf("int 13\n", .{});
-}
-
-fn int14Handler() void {
-    //console.printf("int 14\n", .{});
+export fn dispatchInterrupt(ctx: *Context) callconv(.C) void {
+    if (handlers[ctx.int]) |handler| {
+        handler(contexts[ctx.int]);
+    }
 }

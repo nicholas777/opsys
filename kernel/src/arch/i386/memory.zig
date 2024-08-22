@@ -112,7 +112,7 @@ pub fn mapPage(pt_type: PageTableType) usize {
     return mapPageAt(pt_type, allocPhysicalPage());
 }
 
-pub fn mapPageAt(pt_type: PageTableType, addr: usize) usize {
+pub export fn mapPageAt(pt_type: PageTableType, addr: usize) usize {
     var i: usize = 0;
     var j: usize = 0;
 
@@ -149,6 +149,17 @@ pub fn mapPageAt(pt_type: PageTableType, addr: usize) usize {
     return (i << 22) | (j << 12);
 }
 
+export fn mapPagesAt(pt_type: PageTableType, addr: usize, n: usize) usize {
+    const ptr = mapPageAt(pt_type, addr);
+
+    var i: usize = 1;
+    while (i < n) : (i += 1) {
+        _ = mapPageAt(pt_type, addr + i * 4096);
+    }
+
+    return ptr;
+}
+
 fn reloadPT() void {
     asm volatile (
         \\movl %cr3, %eax
@@ -172,7 +183,7 @@ fn mapPageAtTo(pt_type: PageTableType, addr: usize, virtual: usize) usize {
     return addr;
 }
 
-pub fn freePage(addr: usize, free_physical: bool) void {
+pub export fn freePage(addr: usize, free_physical: bool) void {
     const pde = addr >> 22;
     const pte = (addr >> 12) & 0x3FF;
 

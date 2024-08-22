@@ -4,9 +4,9 @@ const MAGIC = 0x1BADB002;
 const FLAGS = ALIGN | MEMINFO;
 
 const MultibootHeader = extern struct {
-    magic: i32 align(1) = MAGIC,
-    flags: i32 align(1),
-    checksum: i32 align(1),
+    magic: i32 = MAGIC,
+    flags: i32,
+    checksum: i32,
 };
 
 export const multiboot align(4) linksection(".multiboot") = MultibootHeader{
@@ -29,6 +29,9 @@ export fn _start() callconv(.Naked) noreturn {
         :
         : [stack] "{ecx}" (@intFromPtr(&stack_bytes) + @sizeOf(@TypeOf(stack_bytes))),
           [kmain] "{edx}" (@intFromPtr(&kmain)),
+          // This is a hack, multiboot is optimized away
+          // unless we use it somehow
+          [ebp] "{ebp}" (@intFromPtr(&multiboot)),
     );
 
     while (true) {}

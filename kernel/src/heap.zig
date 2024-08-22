@@ -84,7 +84,7 @@ fn getNID(a: u8, b: u8) u8 {
 
 const console = @import("console.zig");
 
-pub fn alloc(size: u32, ptr_align: u32) ?[*]u8 {
+pub export fn alloc(size: u32, ptr_align: u32) ?[*]u8 {
     if (heap.fblock == null) return null;
     if (ptr_align != 0 and (heap.fblock.?.block_size + @sizeOf(HeapBlock)) % ptr_align != 0) {
         if (size == 7) {
@@ -133,7 +133,7 @@ pub fn alloc(size: u32, ptr_align: u32) ?[*]u8 {
     return null;
 }
 
-pub fn free(ptr: [*]u8) void {
+pub export fn free(ptr: [*]u8) void {
     var b: ?*HeapBlock = heap.fblock;
 
     while (b != null) : (b = b.?.next) {
